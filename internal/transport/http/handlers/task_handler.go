@@ -1,10 +1,13 @@
+// internal/transport/http/handlers/task_handler.go
 package handlers
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -27,10 +30,18 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Конвертируем recurrence из DTO в доменную модель
+	recurrence, err := h.dtoToRecurrenceConfig(req.Recurrence)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
+		Recurrence:  recurrence,
 	})
 	if err != nil {
 		writeUsecaseError(w, err)
@@ -69,10 +80,18 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Конвертируем recurrence из DTO в доменную модель
+	recurrence, err := h.dtoToRecurrenceConfig(req.Recurrence)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
+		Recurrence:  recurrence,
 	})
 	if err != nil {
 		writeUsecaseError(w, err)
@@ -110,6 +129,67 @@ func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+// dtoToRecurrenceConfig конвертирует DTO в доменную модель конфигурации периодичности
+func (h *TaskHandler) dtoToRecurrenceConfig(dto *recurrenceConfigDTO) (*taskdomain.RecurrenceConfig, error) {
+	if dto == nil {
+		return nil, nil
+	}
+
+	config := &taskdomain.RecurrenceConfig{
+		Type: taskdomain.RecurrenceType(dto.Type),
+	}
+
+	// Парсим start_date
+	startDate, err := time.Parse(time.RFC3339, dto.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid start_date: %w", err)
+	}
+	config.StartDate = startDate
+
+	// Парсим end_date
+	if dto.EndDate != nil && *dto.EndDate != "" {
+		endDate, err := time.Parse(time.RFC3339, *dto.EndDate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid end_date: %w", err)
+		}
+		config.EndDate = &endDate
+	}
+
+	switch config.Type {
+	case taskdomain.RecurrenceDaily:
+		if dto.Interval != nil {
+			config.Interval = dto.Interval
+		} else {
+			// Интервал по умолчанию - 1 день
+			defaultInterval := 1
+			config.Interval = &defaultInterval
+		}
+	case taskdomain.RecurrenceMonthly:
+		config.MonthDays = dto.MonthDays
+	case taskdomain.RecurrenceSpecific:
+		if len(dto.SpecificDates) > 0 {
+			dates := make([]time.Time, len(dto.SpecificDates))
+			for i, dateStr := range dto.SpecificDates {
+				date, err := time.Parse(time.RFC3339, dateStr)
+				if err != nil {
+					return nil, fmt.Errorf("invalid specific_date: %w", err)
+				}
+				dates[i] = date
+			}
+			config.SpecificDates = dates
+		}
+	case taskdomain.RecurrenceParity:
+		if dto.Parity != nil {
+			parity := taskdomain.ParityType(*dto.Parity)
+			config.Parity = &parity
+		}
+	case taskdomain.RecurrenceNone:
+		// Ничего не делаем
+	}
+
+	return config, nil
 }
 
 func getIDFromRequest(r *http.Request) (int64, error) {

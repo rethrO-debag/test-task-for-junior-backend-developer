@@ -1,3 +1,4 @@
+// cmd/api/main.go
 package main
 
 import (
@@ -47,6 +48,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Запускаем горутину для graceful shutdown
 	go func() {
 		<-ctx.Done()
 
